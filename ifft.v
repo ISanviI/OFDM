@@ -1,13 +1,11 @@
 // Implementation of an adaptive-size Decimation-in-Frequency (DIF) Inverse Fast Fourier Transform (IFFT) using Cooley-Tukey Algorithm.
-// Actual IFFT computation latency is only ~0.11 µs (11 cycles), while the end-to-end block latency is ~41 µs because of serially loading and outputting 2048 samples.
+// Actual IFFT computation latency is only ~0.11 µs (11 cycles), while the end-to-end block latency is ~21 µs because of serially loading 2048 samples and outputting parallely for (2048+11+1) max clock cycles at 100MHz clock frequency.
 
 // When do 'latches' get synthesized in verilog?
-// Make parallel output interface to avoid the long latency of serial output.
-// Set output_active, output_valid, done as 1'd0 after output samples are all parallely outputted for 1 clock cycle.
 
 // input_valid, input_ready, input_count
 // start
-// output_active, output_count, output_valid
+// output_valid, output_count
 // done, busy
 
 `timescale 1ns / 1ps
@@ -32,8 +30,8 @@ module adaptive_dif_ifft (
 
     // Complex output.
     // Final samples are Q2.14 = 16 bits.
-    output reg signed [15:0] output_real,
-    output reg signed [15:0] output_imag,
+    output reg signed [15:0] output_real [0:2047],
+    output reg signed [15:0] output_imag [0:2047],
     output reg               output_valid,
 
     output reg                busy,
@@ -147,36 +145,6 @@ module adaptive_dif_ifft (
             2'b10: bit_reverse_address = bit_reverse_full >> 1;
             2'b11: bit_reverse_address = bit_reverse_full;
         endcase
-    end
-
-    // ============================================================
-    // Input loading
-    // The external input arrives in natural index order: 0,1,2,...,N-1
-    // It is stored at the bit-reversed address required by the DIF IFFT.
-    // ============================================================
-
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
-            input_count <= 12'd0;
-            input_ready <= 1'b1;
-        end
-        else begin
-            // if (start) begin
-            //     input_count <= 12'd0;
-            //     input_ready <= 1'b1;
-            // end
-            if (input_valid && input_ready) begin
-                input_array_real[bit_reverse_address] <= input_real;    // check
-                input_array_imag[bit_reverse_address] <= input_imag;
-
-                if (input_count == N-1) begin
-                    input_ready <= 1'b0;
-                end
-                else begin
-                    input_count <= input_count + 1'b1;
-                end
-            end
-        end
     end
 
     // ============================================================
@@ -385,90 +353,155 @@ module adaptive_dif_ifft (
         end
     end
 
-    // ============================================================
-    // Stage register
-    // Exactly one stage is committed on each rising edge.
-    // ============================================================
-
-    integer s;
-    reg output_active;
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
-            stage        <= 4'd1;
-            busy         <= 1'b0;
-            done         <= 1'b0;
-            output_valid <= 1'b0;
-
-            output_real  <= 16'sd0;
-            output_imag  <= 16'sd0;
-        end
-        else begin
-            done         <= 1'b0;
-            output_valid <= 1'b0;
-
-            // ----------------------------------------------------
-            // Start processing after input loading.
-            // ----------------------------------------------------
-            if (start && !input_ready) begin
-                stage <= 4'd1;
-                busy  <= 1'b1;
-            end
-
-            // ----------------------------------------------------
-            // One stage per clock.
-            // ----------------------------------------------------
-
-            else if (busy) begin
-                for (s = 0; s < MAX_N; s = s + 1) begin
-                    input_array_real[s] <= next_array_real[s];  // Transfer previous stage results to input array for next stage.
-                    input_array_imag[s] <= next_array_imag[s];
-                end
-
-                // ------------------------------------------------
-                // Final stage for selected transform size.
-                // ------------------------------------------------
-
-                if (stage == total_stages) begin
-                    for (s = 0; s < MAX_N; s = s + 1) begin
-                        output_array_real[s] <= next_array_real[s];
-                        output_array_imag[s] <= next_array_imag[s];
-                    end
-                    busy <= 1'b0;
-                    done <= 1'b1;
-                    output_active <= 1'b1;
-                    output_count <= 12'd0;
-                end
-                else begin
-                    stage <= stage + 1'b1;
-                end
-            end
-        end
-    end
-
-    // ============================================================
-    // Output interface
-    // The output array contains the selected number of samples:
-    //
-    // 256  -> 0 ... 255
-    // 512  -> 0 ... 511
-    // 1024 -> 0 ... 1023
-    // 2048 -> 0 ... 2047
-    //
-    // Since the algorithm stops after the selected stage, the
-    // resulting array is already the selected IFFT result.
-    // ============================================================
-
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
-            output_valid <= 1'b0;
-        end
-        else begin
-            output_valid <= 1'b0;
-            if (done && output_active) begin
-                output_real <= output_array_real;
-                output_imag <= output_array_imag;
-                output_valid <= 1'b1;
-            end
-        end
+    // ============================================================ 
+    // FSM 
+    // ============================================================ 
+    localparam STATE_RESET = 3'd0; 
+    localparam STATE_LOAD = 3'd1; 
+    localparam STATE_WAIT_START = 3'd2; 
+    localparam STATE_STAGE = 3'd3; 
+    localparam STATE_OUTPUT = 3'd4; 
+    // localparam STATE_IDLE = 3'd5; 
+    reg [2:0] state; 
+    reg [3:0] output_count; 
+    // ============================================================ 
+    // Stage register 
+    // Exactly one stage is committed on each rising edge. 
+    // ============================================================ 
+    integer s; 
+    always @(posedge clk or posedge rst) begin 
+        if (rst) begin 
+            state <= STATE_RESET; 
+            input_count <= 12'd0; 
+            input_ready <= 1'b0; 
+            stage <= 4'd1; 
+            busy <= 1'b0; 
+            done <= 1'b0; 
+            output_valid <= 1'b0; 
+            output_count <= 4'd0; 
+            output_real[0] <= 16'sd0; 
+            output_imag[0] <= 16'sd0; 
+        end 
+        else begin 
+            case (state) 
+            STATE_RESET: begin 
+                input_count <= 12'd0; 
+                input_ready <= 1'b1; 
+                stage <= 4'd1; 
+                busy <= 1'b0; 
+                done <= 1'b0; 
+                output_valid <= 1'b0; 
+                output_count <= 4'd0; 
+                state <= STATE_LOAD; 
+            end 
+            // ------------------------------------------------ 
+            // Input loading 
+            // The external input arrives in natural index order: 0,1,2,...,N-1 
+            // It is stored at the bit-reversed address required by the DIF IFFT. 
+            // ------------------------------------------------ 
+            STATE_LOAD: begin 
+                input_ready <= 1'b1; 
+                busy <= 1'b0; 
+                done <= 1'b0; 
+                output_valid <= 1'b0; 
+                if (input_valid && input_ready) begin 
+                    input_array_real[bit_reverse_address] <= input_real; // check 
+                    input_array_imag[bit_reverse_address] <= input_imag; 
+                    if (input_count == N-1) begin 
+                        input_ready <= 1'b0; state <= STATE_WAIT_START; 
+                    end 
+                    else begin 
+                        input_count <= input_count + 1'b1; 
+                    end 
+                end 
+            end 
+            // ------------------------------------------------ 
+            // Start processing after input loading. 
+            // ------------------------------------------------ 
+            STATE_WAIT_START: begin 
+                input_ready <= 1'b0; 
+                busy <= 1'b0; 
+                done <= 1'b0; 
+                output_valid <= 1'b0; 
+                if (start) begin 
+                    stage <= 4'd1; 
+                    busy <= 1'b1; 
+                    state <= STATE_STAGE; 
+                end 
+            end 
+            // ------------------------------------------------ 
+            // One stage per clock. 
+            // ------------------------------------------------ 
+            STATE_STAGE: begin 
+                input_ready <= 1'b0; 
+                busy <= 1'b1; 
+                done <= 1'b0; 
+                output_valid <= 1'b0; 
+                for (s = 0; s < MAX_N; s = s + 1) begin 
+                    input_array_real[s] <= next_array_real[s]; // Transfer previous stage results to input array for next stage. 
+                    input_array_imag[s] <= next_array_imag[s]; 
+                end 
+                // ------------------------------------------------ 
+                // Final stage for selected transform size. 
+                // ------------------------------------------------ 
+                if (stage == total_stages) begin 
+                    for (s = 0; s < MAX_N; s = s + 1) begin 
+                        output_array_real[s] <= next_array_real[s]; 
+                        output_array_imag[s] <= next_array_imag[s]; 
+                    end 
+                    busy <= 1'b0; 
+                    done <= 1'b1; 
+                    output_valid <= 1'b1; 
+                    output_count <= 4'd0; 
+                    state <= STATE_OUTPUT; 
+                end 
+                else begin 
+                    stage <= stage + 1'b1; 
+                end 
+            end 
+            // ==================================================== 
+            // Output interface 
+            // The output array contains the selected number of samples: 
+            // 
+            // 256 -> 0 ... 255 
+            // 512 -> 0 ... 511 
+            // 1024 -> 0 ... 1023 
+            // 2048 -> 0 ... 2047 
+            // 
+            // Since the algorithm stops after the selected stage, the resulting array is already the selected IFFT result. 
+            // ==================================================== 
+            STATE_OUTPUT: begin 
+                input_ready <= 1'b1; 
+                busy <= 1'b0; 
+                for (s = 0; s < MAX_N; s = s + 1) begin 
+                    output_real[s] <= output_array_real[s]; 
+                    output_imag[s] <= output_array_imag[s]; 
+                end 
+                output_valid <= 1'b1; 
+                done <= 1'b1; 
+                if (output_count == 4'd9) begin 
+                    output_count <= 4'd0; 
+                    output_valid <= 1'b0; 
+                    done <= 1'b0; 
+                    state <= STATE_RESET; 
+                end 
+                else begin 
+                    output_count <= output_count + 1'b1; 
+                end 
+            end 
+            // ------------------------------------------------ 
+            // Return to idle after parallel output period. 
+            // ------------------------------------------------ 
+            // STATE_IDLE: begin 
+            //     input_ready <= 1'b0; 
+            //     busy <= 1'b0; 
+            //     done <= 1'b0; 
+            //     output_valid <= 1'b0; 
+            // end 
+            default: begin 
+                state <= STATE_RESET; 
+            end 
+            endcase 
+        end 
     end
 endmodule
