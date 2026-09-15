@@ -1,9 +1,14 @@
-// start logic has a race/sequence problem
-// The combinational array copy is extremely large between next_array and input_array
-// output state flag
-// 'done' a blocking assignment?
-// Sign extension for multiplication width
-// Understand flags
+// Implementation of an adaptive-size Decimation-in-Frequency (DIF) Inverse Fast Fourier Transform (IFFT) using Cooley-Tukey Algorithm.
+// Actual IFFT computation latency is only ~0.11 µs (11 cycles), while the end-to-end block latency is ~41 µs because of serially loading and outputting 2048 samples.
+
+// When do 'latches' get synthesized in verilog?
+// Make parallel output interface to avoid the long latency of serial output.
+// Set output_active, output_valid, done as 1'd0 after output samples are all parallely outputted for 1 clock cycle.
+
+// input_valid, input_ready, input_count
+// start
+// output_active, output_count, output_valid
+// done, busy
 
 `timescale 1ns / 1ps
 
@@ -156,10 +161,10 @@ module adaptive_dif_ifft (
             input_ready <= 1'b1;
         end
         else begin
-            if (start) begin
-                input_count <= 12'd0;
-                input_ready <= 1'b1;
-            end
+            // if (start) begin
+            //     input_count <= 12'd0;
+            //     input_ready <= 1'b1;
+            // end
             if (input_valid && input_ready) begin
                 input_array_real[bit_reverse_address] <= input_real;    // check
                 input_array_imag[bit_reverse_address] <= input_imag;
@@ -181,11 +186,11 @@ module adaptive_dif_ifft (
     reg [3:0] stage;
 
     integer chunk;
-    integer point_in_chunk;
-    integer current_index;
-    integer half_size;
-    integer chunk_size;
     integer num_chunks;
+    integer chunk_size;
+    integer point_in_chunk;
+    integer half_size;
+    integer current_index;
 
     // ============================================================
     // Twiddle addressing
@@ -274,7 +279,7 @@ module adaptive_dif_ifft (
     integer i;
     always @(*) begin
         // Default: preserve current contents.
-        for (i = 0; i < MAX_N; i = i + 1) begin
+        for (i = 0; i < N; i = i + 1) begin
             next_array_real[i] = input_array_real[i];
             next_array_imag[i] = input_array_imag[i];
         end
@@ -415,7 +420,7 @@ module adaptive_dif_ifft (
 
             else if (busy) begin
                 for (s = 0; s < MAX_N; s = s + 1) begin
-                    input_array_real[s] <= next_array_real[s];
+                    input_array_real[s] <= next_array_real[s];  // Transfer previous stage results to input array for next stage.
                     input_array_imag[s] <= next_array_imag[s];
                 end
 
@@ -453,29 +458,16 @@ module adaptive_dif_ifft (
     // resulting array is already the selected IFFT result.
     // ============================================================
 
-    reg [11:0] output_count;
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            output_count <= 12'd0;
             output_valid <= 1'b0;
         end
         else begin
             output_valid <= 1'b0;
-            if (done) begin
-                output_count <= 12'd0;
-            end
-            if (output_active) begin
-                output_real <= output_array_real[output_count];
-                output_imag <= output_array_imag[output_count];
+            if (done && output_active) begin
+                output_real <= output_array_real;
+                output_imag <= output_array_imag;
                 output_valid <= 1'b1;
-                if (output_count == N-1) begin
-                    output_active <= 1'b0;
-                    output_valid  <= 1'b0;
-                    done          <= 1'b1;
-                end
-                else begin
-                    output_count <= output_count + 1'b1;
-                end
             end
         end
     end
