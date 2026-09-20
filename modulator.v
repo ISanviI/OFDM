@@ -1,9 +1,10 @@
 // Check - Function synthesis
 // Remove 'incoming_bits' and use 'bitstream' directly in the next_bit_buffer assignment
 
-module modulator (
+module adaptive_modulator (
     input  wire        clk,
-    input  wire        reset,
+    input  wire        rst,
+    input  wire        ifft_ready,
 
     input  wire [1:0]  sel,        // 00:QPSK 01:16QAM 10:64QAM 11:256QAM
     // (data (3GPP) -> MSB arrives first -> leftmost)
@@ -73,7 +74,7 @@ module modulator (
     end
 
     // ----------------------------------------------------
-    // Symbol is available when enough bits are present
+    // Symbol can be generated when enough bits are present
     // ----------------------------------------------------
     always @(*) begin
         if (valid_bits >= bits_per_symbol)
@@ -98,11 +99,14 @@ module modulator (
     reg [5:0] remaining_bits;
     reg [5:0] append_shift;
 
+    // wire consume_symbol;
+    // assign consume_symbol = symbol_valid && ifft_ready;
     always @(*) begin
         next_bit_buffer = bit_buffer;
         next_valid_bits = valid_bits;
         // First remove the bits used by the current symbol
-        if (symbol_valid) begin
+        // Replace 'symbol_valid && ifft_ready' with 'consume_symbol'
+        if (symbol_valid && ifft_ready) begin
             next_bit_buffer = bit_buffer << bits_per_symbol;
             next_valid_bits = valid_bits - bits_per_symbol;
         end
@@ -120,7 +124,7 @@ module modulator (
     // Sequential bit-buffer update
     // ----------------------------------------------------
     always @(posedge clk) begin
-        if (reset) begin
+        if (rst) begin
             bit_buffer <= 32'd0;
             valid_bits <= 6'd0;
         end
@@ -136,16 +140,16 @@ module modulator (
     // ----------------------------------------------------
     function signed [15:0] pam_level;
         input [3:0] bits;   // up to 4 bits
-        input [1:0] nbits;  // how many bits actually used
+        input [2:0] nbits;  // how many bits actually used
         reg signed [15:0] lvl;
 
         begin
             case (nbits)
                 // 1/root(2) * 2^14 = 11585
-                2'd1: lvl = bits[0] ? -16'sd11585 : 16'sd11585;
+                3'd1: lvl = bits[0] ? -16'sd11585 : 16'sd11585;
 
                 // 1/root(10) * 2^14 = 5181
-                2'd2:
+                3'd2:
                     case (bits[1:0])
                         2'b00: lvl =  16'sd5181;    // +1
                         2'b01: lvl =  16'sd15543;   // +3
@@ -153,7 +157,7 @@ module modulator (
                         2'b11: lvl = -16'sd15543;   // -3
                     endcase
                 // 1/root(42) * 2^14 = 2528
-                2'd3:
+                3'd3:
                     case (bits[2:0])
                         3'b000: lvl =  16'sd7584;   // +3
                         3'b001: lvl =  16'sd2528;   // +1
@@ -165,7 +169,7 @@ module modulator (
                         3'b111: lvl = -16'sd17697;  // -7
                     endcase
                 // 1/root(170) * 2^14 = 1257
-                2'd4:
+                3'd4:
                     case (bits[3:0])
                         4'b0000: lvl =  16'sd6283;   // +5
                         4'b0001: lvl =  16'sd8796;   // +7
@@ -206,23 +210,23 @@ module modulator (
         case (sel)
             2'b00: begin
                 // QPSK: 1 bit/axis
-                I_out = pam_level({3'b000, current_bits[0]}, 2'd1);
-                Q_out = pam_level({3'b000, current_bits[1]}, 2'd1);
+                I_out = pam_level({3'b000, current_bits[0]}, 3'd1);
+                Q_out = pam_level({3'b000, current_bits[1]}, 3'd1);
             end
             2'b01: begin
                 // 16QAM: 2 bits/axis
-                I_out = pam_level({2'b00, current_bits[0], current_bits[2]}, 2'd2);
-                Q_out = pam_level({2'b00, current_bits[1], current_bits[3]}, 2'd2);
+                I_out = pam_level({2'b00, current_bits[0], current_bits[2]}, 3'd2);
+                Q_out = pam_level({2'b00, current_bits[1], current_bits[3]}, 3'd2);
             end
             2'b10: begin
                 // 64QAM: 3 bits/axis
-                I_out = pam_level({1'b0, current_bits[0], current_bits[2], current_bits[4]}, 2'd3);
-                Q_out = pam_level({1'b0, current_bits[1], current_bits[3], current_bits[5]}, 2'd3);
+                I_out = pam_level({1'b0, current_bits[0], current_bits[2], current_bits[4]}, 3'd3);
+                Q_out = pam_level({1'b0, current_bits[1], current_bits[3], current_bits[5]}, 3'd3);
             end
             2'b11: begin
                 // 256QAM: 4 bits/axis
-                I_out = pam_level({current_bits[0], current_bits[2], current_bits[4], current_bits[6]}, 2'd4);
-                Q_out = pam_level({current_bits[1], current_bits[3], current_bits[5], current_bits[7]}, 2'd4);
+                I_out = pam_level({current_bits[0], current_bits[2], current_bits[4], current_bits[6]}, 3'd4);
+                Q_out = pam_level({current_bits[1], current_bits[3], current_bits[5], current_bits[7]}, 3'd4);
             end
             default: begin
                 I_out = 16'sd0;

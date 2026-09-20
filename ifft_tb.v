@@ -5,7 +5,6 @@ module tb_adaptive_dif_ifft;
 
     reg         clk;
     reg         rst;
-    reg         start;
     reg [1:0]   select_line;
 
     reg signed [15:0] input_real;
@@ -18,13 +17,11 @@ module tb_adaptive_dif_ifft;
 
     wire output_valid;
     wire busy;
-    wire done;
 
     // DUT
     adaptive_dif_ifft dut (
         .clk(clk),
         .rst(rst),
-        .start(start),
 
         .select_line(select_line),
 
@@ -37,8 +34,7 @@ module tb_adaptive_dif_ifft;
         .output_imag(output_imag),
         .output_valid(output_valid),
 
-        .busy(busy),
-        .done(done)
+        .busy(busy)
     );
 
     // Clock
@@ -53,7 +49,6 @@ module tb_adaptive_dif_ifft;
 
     initial begin
         rst         = 1'b1;
-        start       = 1'b0;
         select_line = 2'b11;
         input_real  = 16'sd0;
         input_imag  = 16'sd0;
@@ -98,12 +93,6 @@ module tb_adaptive_dif_ifft;
         input_real  <= 16'sd0;
         input_imag  <= 16'sd0;
 
-        // Start IFFT computation.
-        @(posedge clk);
-        start <= 1'b1;
-        @(posedge clk);
-        start <= 1'b0;
-
         // Wait until computation is complete.
         wait (output_valid == 1'b1);
         $display("==============================================");
@@ -115,10 +104,9 @@ module tb_adaptive_dif_ifft;
         while (output_valid == 1'b1) begin
             @(posedge clk);
             output_cycles = output_cycles + 1;
-            $display("Output cycle = %0d, valid = %b, done = %b",
+            $display("Output cycle = %0d, valid = %b",
                 output_cycles,
-                output_valid,
-                done);
+                output_valid);
         end
 
         // Display selected output samples.
@@ -147,8 +135,7 @@ module tb_adaptive_dif_ifft;
 
         // Verify output flags are low after output period.
         @(posedge clk);
-        if ((output_valid == 1'b0) &&
-            (done == 1'b0)) begin
+        if ((output_valid == 1'b0)) begin
             $display("==============================================");
             $display("PASS: Output flags returned to zero.");
             $display("==============================================");

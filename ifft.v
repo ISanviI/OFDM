@@ -4,21 +4,16 @@
 // When do 'latches' get synthesized in verilog?
 
 // input_valid, input_ready, input_count
-// start
+// busy
 // output_valid, output_count
-// done, busy
 
 `timescale 1ns / 1ps
 
 module adaptive_dif_ifft (
     input  wire        clk,
     input  wire        rst,
-    input  wire        start,
 
-    // 00 = 256
-    // 01 = 512
-    // 10 = 1024
-    // 11 = 2048
+    // 00 = 256; 01 = 512; 10 = 1024; 11 = 2048
     input  wire [1:0]  select_line,
 
     // One complex input sample at a time.
@@ -34,39 +29,34 @@ module adaptive_dif_ifft (
     output reg signed [15:0] output_imag [0:2047],
     output reg               output_valid,
 
-    output reg                busy,
-    output reg                done
+    output reg                busy
 );
-    // ============================================================
+    // ----------------------------------------------------
     // Maximum transform size
-    // ============================================================
-
+    // ----------------------------------------------------
     parameter MAX_N = 2048;
     parameter ADDR_W = 11;
 
-    // ============================================================
+    // ----------------------------------------------------
     // Input/output memories
     // After quantization, internal samples are represented using 16 bits : Q2.14
     // The initial and every complete stage uses this format.
-    // ============================================================
+    // ----------------------------------------------------
 
     reg signed [15:0] input_array_real [0:MAX_N-1];
     reg signed [15:0] input_array_imag [0:MAX_N-1];
 
-    reg signed [15:0] output_array_real [0:MAX_N-1];
-    reg signed [15:0] output_array_imag [0:MAX_N-1];
-
-    // ============================================================
+    // ----------------------------------------------------
     // Temporary combinational arrays
     //
     // One complete stage is calculated combinationally.
     // At the clock edge, the entire stage is written to memory.
-    // ============================================================
+    // ----------------------------------------------------
 
     reg signed [15:0] next_array_real [0:MAX_N-1];
     reg signed [15:0] next_array_imag [0:MAX_N-1];
 
-    // ============================================================
+    // ----------------------------------------------------
     // Twiddle ROM Q2.14 representation.
     // The ROM contains: conjugate(W_2048^k) for k = 0 ... 1023.
     //
@@ -79,7 +69,7 @@ module adaptive_dif_ifft (
     // The actual ROM values are expected in:
     //     twiddle_real.mem
     //     twiddle_imag.mem
-    // ============================================================
+    // ----------------------------------------------------
 
     reg signed [15:0] twiddle_real [0:1023];
     reg signed [15:0] twiddle_imag [0:1023];
@@ -89,9 +79,9 @@ module adaptive_dif_ifft (
         $readmemh("twiddle_imag.mem", twiddle_imag);
     end
 
-    // ============================================================
+    // ----------------------------------------------------
     // Transform-size control
-    // ============================================================
+    // ----------------------------------------------------
 
     reg [11:0] N;
     reg [3:0]  total_stages;
@@ -116,7 +106,8 @@ module adaptive_dif_ifft (
             end
         endcase
     end
-    // ============================================================
+
+    // ----------------------------------------------------
     // Adaptive bit reversal
     // First reverse all 11 address bits.
     // Then: (>>> -> Arithmetic Right Shift)
@@ -127,8 +118,7 @@ module adaptive_dif_ifft (
     // 2048 -> >>> 0
     //
     // This produces the required active-width bit reversal.
-    // ============================================================
-
+    // ----------------------------------------------------
     reg [10:0] bit_reverse_full;
     reg [10:0] bit_reverse_address;
     reg [11:0] input_count;
@@ -147,12 +137,10 @@ module adaptive_dif_ifft (
         endcase
     end
 
-    // ============================================================
+    // ----------------------------------------------------
     // Stage control
-    // ============================================================
-
+    // ----------------------------------------------------
     reg [3:0] stage;
-
     integer chunk;
     integer num_chunks;
     integer chunk_size;
@@ -160,14 +148,13 @@ module adaptive_dif_ifft (
     integer half_size;
     integer current_index;
 
-    // ============================================================
+    // ----------------------------------------------------
     // Twiddle addressing
-    // ============================================================
-
+    // ----------------------------------------------------
     integer twiddle_index;
     integer twiddle_stride;
 
-    // ============================================================
+    // ----------------------------------------------------
     // Intermediate arithmetic
 
     // Maximum supported operation:
@@ -177,7 +164,7 @@ module adaptive_dif_ifft (
     // The first stage begins with Q2.14 data and therefore has
     // the smaller Q4.28/Q5.28 widths described in the algorithm.
     // Using the larger widths here safely accommodates all stages.
-    // ============================================================
+    // ----------------------------------------------------
 
     reg signed [31:0] mult_rr;
     reg signed [31:0] mult_ii;
@@ -203,13 +190,12 @@ module adaptive_dif_ifft (
     reg signed [15:0] final_diff_real;
     reg signed [15:0] final_diff_imag;
 
-    // ============================================================
+    // ----------------------------------------------------
     // Rounding function
     // Convert Q4.28 -> Q4.14
 
-    // Positive: +2^13 and Negative: -2^13
-    // followed by arithmetic >>> 14.
-    // ============================================================
+    // Positive: +2^13 and Negative: -2^13 followed by arithmetic >>> 14.
+    // ----------------------------------------------------
 
     function signed [15:0] round_q428_to_q214;
         input signed [31:0] value;
@@ -237,12 +223,12 @@ module adaptive_dif_ifft (
         end
     endfunction
 
-    // ============================================================
+    // ----------------------------------------------------
     // Combinational stage calculation
     // The loops are elaborated/synthesized as combinational hardware.
     // Only ONE stage is calculated for the current value of "stage".
     // The resulting entire stage is registered on the next rising clock edge.
-    // ============================================================
+    // ----------------------------------------------------
 
     integer i;
     always @(*) begin
@@ -252,47 +238,32 @@ module adaptive_dif_ifft (
             next_array_imag[i] = input_array_imag[i];
         end
 
-        // --------------------------------------------------------
         // Current stage parameters
-        // --------------------------------------------------------
-
         if (stage != 0 ) begin  // Not needed, but added just in case.
             half_size  = 1 << (stage - 1);
             chunk_size = 1 << stage;
             num_chunks = N >> stage;
         end
 
-        // --------------------------------------------------------
         // Process every chunk
-        // --------------------------------------------------------
-
-        for (chunk = 0;
-             chunk < num_chunks;
-             chunk = chunk + 1) begin
+        for (chunk = 0; chunk < num_chunks; chunk = chunk + 1) begin
 
             // ----------------------------------------------------
             // First operation:
             // Multiply the second half by the conjugate twiddle.
             // BEFORE the addition/subtraction.
             // ----------------------------------------------------
-
             for (point_in_chunk = half_size;
                  point_in_chunk < chunk_size;
                  point_in_chunk = point_in_chunk + 1) begin
 
                 current_index = chunk * chunk_size + point_in_chunk;
-
                 // k = point_in_chunk - half_size
-
                 twiddle_stride = 2048 >> stage; // check
                 twiddle_index = (point_in_chunk - half_size) * twiddle_stride;
 
-                // Complex multiplication:
-                // (a + jb)(c + jd)
-                // real = ac - bd
-                // imag = ad + bc
-                // twiddle ROM contains the conjugated twiddle.
-
+                // Complex multiplication: (a + jb)(c + jd)
+                // real = ac - bd; imag = ad + bc
                 mult_rr =
                     $signed(input_array_real[current_index]) * $signed(twiddle_real[twiddle_index]);
                 mult_ii =
@@ -310,7 +281,6 @@ module adaptive_dif_ifft (
                 // First half : A + B_twiddled
                 // Second half: A - B_twiddled
                 // ------------------------------------------------
-
                 butterfly_sum_real =
                     $signed(input_array_real[current_index - half_size]) + twiddled_real;
                 butterfly_sum_imag =
@@ -322,10 +292,8 @@ module adaptive_dif_ifft (
 
                 // ------------------------------------------------
                 // Scaling by 1/2 (Q5.28 -> Q4.28)
-                //
                 // Arithmetic right shift by ONE bit.
                 // ------------------------------------------------
-
                 scaled_sum_real = butterfly_sum_real >>> 1;
                 scaled_sum_imag = butterfly_sum_imag >>> 1;
                 scaled_diff_real = butterfly_diff_real >>> 1;
@@ -335,7 +303,6 @@ module adaptive_dif_ifft (
                 // Q4.28 -> Q4.14
                 // Round-to-nearest and remove 14 fractional bits.
                 // ------------------------------------------------
-
                 final_sum_real = round_q428_to_q214(scaled_sum_real);
                 final_sum_imag = round_q428_to_q214(scaled_sum_imag);
                 final_diff_real = round_q428_to_q214(scaled_diff_real);
@@ -344,7 +311,6 @@ module adaptive_dif_ifft (
                 // ------------------------------------------------
                 // Write butterfly outputs into temporary array.
                 // ------------------------------------------------
-
                 next_array_real[current_index - half_size] = final_sum_real;
                 next_array_imag[current_index - half_size] = final_sum_imag;
                 next_array_real[current_index] = final_diff_real;
@@ -353,21 +319,21 @@ module adaptive_dif_ifft (
         end
     end
 
-    // ============================================================ 
+    // ---------------------------------------------------- 
     // FSM 
-    // ============================================================ 
+    // ---------------------------------------------------- 
     localparam STATE_RESET = 3'd0; 
     localparam STATE_LOAD = 3'd1; 
-    localparam STATE_WAIT_START = 3'd2; 
     localparam STATE_STAGE = 3'd3; 
     localparam STATE_OUTPUT = 3'd4; 
     // localparam STATE_IDLE = 3'd5; 
     reg [2:0] state; 
-    reg [3:0] output_count; 
-    // ============================================================ 
+    reg [3:0] output_count;
+
+    // ---------------------------------------------------- 
     // Stage register 
     // Exactly one stage is committed on each rising edge. 
-    // ============================================================ 
+    // ---------------------------------------------------- 
     integer s; 
     always @(posedge clk or posedge rst) begin 
         if (rst) begin 
@@ -376,7 +342,6 @@ module adaptive_dif_ifft (
             input_ready <= 1'b0; 
             stage <= 4'd1; 
             busy <= 1'b0; 
-            done <= 1'b0; 
             output_valid <= 1'b0; 
             output_count <= 4'd0; 
             output_real[0] <= 16'sd0; 
@@ -389,11 +354,11 @@ module adaptive_dif_ifft (
                 input_ready <= 1'b1; 
                 stage <= 4'd1; 
                 busy <= 1'b0; 
-                done <= 1'b0; 
                 output_valid <= 1'b0; 
                 output_count <= 4'd0; 
                 state <= STATE_LOAD; 
-            end 
+            end
+
             // ------------------------------------------------ 
             // Input loading 
             // The external input arrives in natural index order: 0,1,2,...,N-1 
@@ -402,63 +367,54 @@ module adaptive_dif_ifft (
             STATE_LOAD: begin 
                 input_ready <= 1'b1; 
                 busy <= 1'b0; 
-                done <= 1'b0; 
                 output_valid <= 1'b0; 
                 if (input_valid && input_ready) begin 
-                    input_array_real[bit_reverse_address] <= input_real; // check 
+                    // bit_reverse_address is a function of input_count and hence is updated automatically.
+                    input_array_real[bit_reverse_address] <= input_real; 
                     input_array_imag[bit_reverse_address] <= input_imag; 
                     if (input_count == N-1) begin 
-                        input_ready <= 1'b0; state <= STATE_WAIT_START; 
+                        input_ready <= 1'b0;
+                        stage <= 4'd1;
+                        busy <= 1'b1;
+                        state <= STATE_STAGE; 
                     end 
                     else begin 
                         input_count <= input_count + 1'b1; 
                     end 
                 end 
-            end 
-            // ------------------------------------------------ 
-            // Start processing after input loading. 
-            // ------------------------------------------------ 
-            STATE_WAIT_START: begin 
-                input_ready <= 1'b0; 
-                busy <= 1'b0; 
-                done <= 1'b0; 
-                output_valid <= 1'b0; 
-                if (start) begin 
-                    stage <= 4'd1; 
-                    busy <= 1'b1; 
-                    state <= STATE_STAGE; 
-                end 
-            end 
+            end
+
             // ------------------------------------------------ 
             // One stage per clock. 
             // ------------------------------------------------ 
             STATE_STAGE: begin 
                 input_ready <= 1'b0; 
                 busy <= 1'b1; 
-                done <= 1'b0; 
                 output_valid <= 1'b0; 
                 for (s = 0; s < MAX_N; s = s + 1) begin 
-                    input_array_real[s] <= next_array_real[s]; // Transfer previous stage results to input array for next stage. 
+                    // Transfer previous stage results to input array for next stage. 
+                    input_array_real[s] <= next_array_real[s]; 
                     input_array_imag[s] <= next_array_imag[s]; 
-                end 
+                end
+
                 // ------------------------------------------------ 
                 // Final stage for selected transform size. 
                 // ------------------------------------------------ 
                 if (stage == total_stages) begin 
                     for (s = 0; s < MAX_N; s = s + 1) begin 
-                        output_array_real[s] <= next_array_real[s]; 
-                        output_array_imag[s] <= next_array_imag[s]; 
+                        output_real[s] <= next_array_real[s]; 
+                        output_imag[s] <= next_array_imag[s]; 
                     end 
                     busy <= 1'b0; 
-                    done <= 1'b1; 
                     output_valid <= 1'b1; 
                     output_count <= 4'd0; 
                     state <= STATE_OUTPUT; 
                 end 
                 else begin 
                     stage <= stage + 1'b1; 
-                end 
-            end 
+                end
+            end
+
             // ==================================================== 
             // Output interface 
             // The output array contains the selected number of samples: 
@@ -471,33 +427,19 @@ module adaptive_dif_ifft (
             // Since the algorithm stops after the selected stage, the resulting array is already the selected IFFT result. 
             // ==================================================== 
             STATE_OUTPUT: begin 
-                input_ready <= 1'b1; 
-                busy <= 1'b0; 
-                for (s = 0; s < MAX_N; s = s + 1) begin 
-                    output_real[s] <= output_array_real[s]; 
-                    output_imag[s] <= output_array_imag[s]; 
-                end 
+                input_ready <= 1'b0; 
+                busy <= 1'b0;
                 output_valid <= 1'b1; 
-                done <= 1'b1; 
-                if (output_count == 4'd9) begin 
+                if (output_count == 4'd10) begin 
                     output_count <= 4'd0; 
                     output_valid <= 1'b0; 
-                    done <= 1'b0; 
                     state <= STATE_RESET; 
                 end 
                 else begin 
                     output_count <= output_count + 1'b1; 
                 end 
-            end 
-            // ------------------------------------------------ 
-            // Return to idle after parallel output period. 
-            // ------------------------------------------------ 
-            // STATE_IDLE: begin 
-            //     input_ready <= 1'b0; 
-            //     busy <= 1'b0; 
-            //     done <= 1'b0; 
-            //     output_valid <= 1'b0; 
-            // end 
+            end
+
             default: begin 
                 state <= STATE_RESET; 
             end 
